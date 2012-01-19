@@ -6,5 +6,10 @@ Email: codeb2cc{at}gmail.com
 
 Description
 -----------
-This apps are modified from Flask's demo examples replacing sqlite with mongdb
+These apps are modified from Flask's demo examples, replacing sqlite with mongdb.
 
+Dependences
+-----------
+* Flask(with Jinja2, Werkzeug)
+* mongoengine
+* pymongo
