@@ -6,7 +6,6 @@
     A microblogging application written with Flask and MongoDB.
 """
 
-import time
 from hashlib import md5
 from datetime import datetime
 
@@ -19,7 +18,7 @@ from models import User, Message
 
 # Configuration
 PER_PAGE = 30
-DEBUG = TRUE
+DEBUG = True
 SECRET_KEY = 'minitwit secret key'
 
 # Create application
@@ -38,7 +37,7 @@ def connect_db(db_name='minitwit'):
 
 def format_datetime(timestamp):
     """Format a timestamp for display."""
-    return datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d @ %H:%M')
+    return timestamp.strftime('%Y-%m-%d @ %H:%M')
 
 def gravatar_url(email, size=80):
     """Return the gravatar image for the given email address."""
@@ -48,7 +47,8 @@ def gravatar_url(email, size=80):
 @app.before_request
 def before_request():
     """Look up the current user"""
-    if session['user_id']:
+    g.user = None
+    if 'user_id' in session:
         g.user = User.objects.with_id(session['user_id'])
 
 @app.route('/')
@@ -59,7 +59,8 @@ def timeline():
     """
     if not g.user:
         return redirect(url_for('public_timeline'))
-    users = g.user.only('follower').extend(g.user.username)
+    users = [u.username for u in g.user.followers] or []
+    users.append(g.user.username)
     messages = Message.objects.filter(author__in=users)\
             .order_by('-pub_date').limit(PER_PAGE)
     return render_template('timeline.html', messages=messages)
@@ -73,11 +74,14 @@ def public_timeline():
 @app.route('/<username>')
 def user_timeline(username):
     """Display a users tweets."""
-    profile_user = User.objects.filter(username__exact=username)
-
-    if profile_user is None:
+    try:
+        profile_user = User.objects.filter(username__exact=username).get()
+    except User.DoesNotExist:
         abort(404)
-    followed = username in g.user.follower or None
+
+    followed = False
+    if g.user:
+        followed = profile_user in g.user.followers or None
     messages = Message.objects.filter(author__exact=username)\
         .order_by('-pub_date').limit(PER_PAGE)
     return render_template('timeline.html',
@@ -95,10 +99,11 @@ def follow_user(username):
         abort(404)
 
     # Update relation
+    user = User.objects.filter(username__exact=username).get()
     User.objects.filter(username__exact=username).\
-            update_one(add_to_set__followee=g.user.username)
+            update_one(add_to_set__followees=g.user)
     User.objects.filter(username__exact=g.user.username).\
-            update_one(add_to_set__follower=username)
+            update_one(add_to_set__followers=user)
 
     flash('You are now following "%s"' % username)
     return redirect(url_for('user_timeline', username=username))
@@ -112,10 +117,11 @@ def unfollow_user(username):
         abort(404)
 
     # Update relation
+    user = User.objects.filter(username__exact=username).get()
     User.objects.filter(username__exact=username).\
-            update_one(pull__followee=g.user.username)
+            update_one(pull__followees=g.user)
     User.objects.filter(username__exact=g.user.username).\
-            update_one(pull__follower=username)
+            update_one(pull__followers=user)
 
     flash('You are no longer following "%s"' % username)
     return redirect(url_for('user_timeline', username=username))
@@ -129,38 +135,30 @@ def add_message():
         # Save message
         message = Message(
                 author = g.user.username,
-                text = form['text'],
-                pub_date = int(time.time())
+                text = request.form['text'],
+                pub_date = datetime.now()
             )
         message.save()
         flash('Your message was recorded')
     return redirect(url_for('timeline'))
 
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET', 'POST', ])
 def login():
     """Logs the user in."""
     if g.user:
         return redirect(url_for('timeline'))
     error = None
     if request.method == 'POST':
-        user =
-
-
-@app.route('/login', methods=['GET', 'POST', ])
-def login():
-    error = None
-    if request.method == 'POST':
         try:
-            user = User.objects.filter(username__exact=request.form['username']).get():
-        except DoesNotExist:
+            user = User.objects.filter(username__exact=request.form['username']).get()
+            if not check_password_hash(user.pw_hash, request.form['password']):
+                error = 'Invalid Password'
+            else:
+                flash('You were logged in')
+                session['user_id'] = user.id
+                return redirect(url_for('timeline'))
+        except User.DoesNotExist:
             error = 'Invalid Username'
-
-        if not check_password_hash(user.pw_hash, request.form['password']):
-            error = 'Invalid Password'
-        else:
-            flash('You were logged in')
-            session['user_id'] = user.id
-            return redirect(url_for('timeline'))
 
     return render_template('login.html', error=error)
 
@@ -171,7 +169,7 @@ def logout():
     session.pop('user_id', None)
     return redirect(url_for('public_timeline'))
 
-@app.route('/register', methods=['GET', 'POST'])
+@app.route('/register', methods=['GET', 'POST', ])
 def register():
     """Register the user."""
     if g.user:
@@ -187,17 +185,17 @@ def register():
             error = 'You have to enter a password'
         elif request.form['password'] != request.form['password2']:
             error = 'The two passwords do not match'
-        elif not len(User.objects.filter(username__exact=request.form['username__exact'])):
-            error = 'The username is alredy taken'
+        elif len(User.objects.filter(username__exact=request.form['username'])):
+            error = 'The username is already taken'
         else:
             # Register user
             user = User(
                     username = request.form['username'],
                     email = request.form['email'],
-                    pw_hash = generate_password_hash(request.form['password']
+                    pw_hash = generate_password_hash(request.form['password']),
                 )
             user.save()
-            flash('You were successfully registered an can login now')
+            flash('You were successfully registered and can login now')
             return redirect(url_for('login'))
     return render_template('register.html', error=error)
 
@@ -207,4 +205,6 @@ app.jinja_env.filters['gravatar'] = gravatar_url
 
 if __name__ == '__main__':
     connect_db()
+    app.run()
+    app.run()
     app.run()
